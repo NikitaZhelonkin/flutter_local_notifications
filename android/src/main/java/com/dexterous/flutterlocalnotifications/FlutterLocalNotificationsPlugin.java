@@ -685,7 +685,6 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
 
     private void repeat(MethodCall call, Result result) {
         Map<String, Object> arguments = call.arguments();
-        Log.e("TAG","REPEAT:"+ arguments.toString());
         NotificationDetails notificationDetails = extractNotificationDetails(result, arguments);
         if (notificationDetails != null) {
             repeatNotification(registrar.context(), notificationDetails, true);
