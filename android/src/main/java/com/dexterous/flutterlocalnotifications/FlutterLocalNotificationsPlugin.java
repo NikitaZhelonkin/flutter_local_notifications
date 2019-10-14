@@ -14,8 +14,10 @@ import android.media.AudioAttributes;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
 import android.text.Html;
 import android.text.Spanned;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
@@ -48,6 +50,8 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
@@ -92,12 +96,16 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
     public static String REPEAT = "repeat";
     private final Registrar registrar;
     private MethodChannel channel;
+    private Handler handler;
+    private Executor executor;
 
     private FlutterLocalNotificationsPlugin(Registrar registrar) {
         this.registrar = registrar;
         this.registrar.addNewIntentListener(this);
         this.channel = new MethodChannel(registrar.messenger(), METHOD_CHANNEL);
         this.channel.setMethodCallHandler(this);
+        handler = new Handler();
+        executor = Executors.newSingleThreadExecutor();
     }
 
     public static void rescheduleNotifications(Context context) {
@@ -195,7 +203,7 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
         SharedPreferences sharedPreferences = context.getSharedPreferences(SCHEDULED_NOTIFICATIONS, Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = sharedPreferences.edit();
         editor.putString(SCHEDULED_NOTIFICATIONS, json);
-        editor.commit();
+        editor.apply();
     }
 
     /**
@@ -585,10 +593,10 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
         return (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
     }
 
-    private static boolean isValidDrawableResource(Context context, String name, Result result, String errorCode) {
+    private boolean isValidDrawableResource(Context context, String name, Result result, String errorCode) {
         int resourceId = context.getResources().getIdentifier(name, DRAWABLE, context.getPackageName());
         if (resourceId == 0) {
-            result.error(errorCode, String.format(INVALID_DRAWABLE_RESOURCE_ERROR_MESSAGE, name), null);
+            error(result, errorCode, String.format(INVALID_DRAWABLE_RESOURCE_ERROR_MESSAGE, name), null);
             return false;
         }
         return true;
@@ -605,7 +613,16 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
     }
 
     @Override
-    public void onMethodCall(MethodCall call, Result result) {
+    public void onMethodCall(final MethodCall call, final Result result) {
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                call(call, result);
+            }
+        });
+    }
+
+    public void call(MethodCall call, Result result) {
         switch (call.method) {
             case INITIALIZE_METHOD: {
                 // initializeHeadlessService(call, result);
@@ -657,21 +674,22 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
             pendingNotification.put("payload", scheduledNotification.payload);
             pendingNotifications.add(pendingNotification);
         }
-        result.success(pendingNotifications);
+        success(result, pendingNotifications);
     }
 
     private void cancel(MethodCall call, Result result) {
         Integer id = call.arguments();
         cancelNotification(id);
-        result.success(null);
+        success(result, null);
     }
 
     private void repeat(MethodCall call, Result result) {
         Map<String, Object> arguments = call.arguments();
+        Log.e("TAG","REPEAT:"+ arguments.toString());
         NotificationDetails notificationDetails = extractNotificationDetails(result, arguments);
         if (notificationDetails != null) {
             repeatNotification(registrar.context(), notificationDetails, true);
-            result.success(null);
+            success(result, null);
         }
     }
 
@@ -680,7 +698,7 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
         NotificationDetails notificationDetails = extractNotificationDetails(result, arguments);
         if (notificationDetails != null) {
             scheduleNotification(registrar.context(), notificationDetails, true);
-            result.success(null);
+            success(result, null);
         }
     }
 
@@ -689,7 +707,7 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
         NotificationDetails notificationDetails = extractNotificationDetails(result, arguments);
         if (notificationDetails != null) {
             showNotification(registrar.context(), notificationDetails);
-            result.success(null);
+            success(result, null);
         }
     }
 
@@ -702,7 +720,7 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
             payload = registrar.activity().getIntent().getStringExtra(PAYLOAD);
         }
         notificationAppLaunchDetails.put(PAYLOAD, payload);
-        result.success(notificationAppLaunchDetails);
+        success(result, notificationAppLaunchDetails);
     }
 
     private void initialize(MethodCall call, Result result) {
@@ -714,12 +732,12 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
         SharedPreferences sharedPreferences = registrar.context().getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = sharedPreferences.edit();
         editor.putString(DEFAULT_ICON, defaultIcon);
-        editor.commit();
+        editor.apply();
 
         if (registrar.activity() != null) {
             sendNotificationPayloadMessage(registrar.activity().getIntent());
         }
-        result.success(true);
+        success(result, true);
     }
 
     /// Extracts the details of the notifications passed from the Flutter side and also validates that some of the details (especially resources) passed are valid
@@ -732,13 +750,12 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
                 hasInvalidLedDetails(result, notificationDetails)) {
             return null;
         }
-
         return notificationDetails;
     }
 
     private boolean hasInvalidLedDetails(Result result, NotificationDetails notificationDetails) {
         if (notificationDetails.ledColor != null && (notificationDetails.ledOnMs == null || notificationDetails.ledOffMs == null)) {
-            result.error(INVALID_LED_DETAILS_ERROR_CODE, INVALID_LED_DETAILS_ERROR_MESSAGE, null);
+            error(result, INVALID_LED_DETAILS_ERROR_CODE, INVALID_LED_DETAILS_ERROR_MESSAGE, null);
             return true;
         }
         return false;
@@ -748,7 +765,7 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
         if (!StringUtils.isNullOrEmpty(sound)) {
             int soundResourceId = registrar.context().getResources().getIdentifier(sound, "raw", registrar.context().getPackageName());
             if (soundResourceId == 0) {
-                result.error(INVALID_SOUND_ERROR_CODE, INVALID_RAW_RESOURCE_ERROR_MESSAGE, null);
+                error(result, INVALID_SOUND_ERROR_CODE, INVALID_RAW_RESOURCE_ERROR_MESSAGE, null);
                 return true;
             }
         }
@@ -798,7 +815,7 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
         notificationManager.cancelAll();
         ArrayList<NotificationDetails> scheduledNotifications = loadScheduledNotifications(context);
         if (scheduledNotifications == null || scheduledNotifications.isEmpty()) {
-            result.success(null);
+            success(result, null);
             return;
         }
 
@@ -811,7 +828,7 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
         }
 
         saveScheduledNotifications(context, new ArrayList<NotificationDetails>());
-        result.success(null);
+        success(result, null);
     }
 
     @Override
@@ -826,6 +843,24 @@ public class FlutterLocalNotificationsPlugin implements MethodCallHandler, Plugi
             return true;
         }
         return false;
+    }
+
+    private void success(final Result result, final Object data){
+     handler.post(new Runnable() {
+         @Override
+         public void run() {
+             result.success(data);
+         }
+     });
+    }
+
+    private void error(final Result result, final String var1, final String var2, final Object var3){
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                result.error(var1, var2, var3);
+            }
+        });
     }
 }
 
